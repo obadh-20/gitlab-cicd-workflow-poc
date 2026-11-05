@@ -1,0 +1,62 @@
+
+stages:
+  - test
+  - release
+
+# Run tests on normal commits to main
+test_services:
+  stage: test
+  image: node:22-alpine
+  script:
+    - |
+      set -eu
+      for service in gateway administration ai-control-panel; do
+        echo "Testing $service"
+        (
+          cd "backend/$service"
+          npm ci
+          npm test
+        )
+      done
+      test -s frontend/index.html
+      echo "All tests passed"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# Run when a developer creates a release tag
+release_service:
+  stage: release
+  image: node:22-alpine
+  script:
+    - |
+      set -eu
+
+      sh scripts/parse-release-tag.sh "$CI_COMMIT_TAG" > release.env
+      cat release.env
+      . ./release.env
+
+      echo "Preparing release:"
+      echo "Service: $SERVICE"
+      echo "Environment: $ENVIRONMENT"
+      echo "Version: $VERSION"
+      echo "Dockerfile: $DOCKERFILE"
+
+      case "$SERVICE" in
+        frontend)
+          test -s frontend/index.html
+          ;;
+        ai-control)
+          cd backend/ai-control-panel
+          npm ci
+          npm test
+          ;;
+        gateway|administration)
+          cd "backend/$SERVICE"
+          npm ci
+          npm test
+          ;;
+      esac
+
+      echo "Release validation successful!"
+  rules:
+    - if: '$CI_COMMIT_TAG'
