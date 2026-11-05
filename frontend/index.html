@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CI/CD Work Repo POC</title>
+  <style>
+    body { font: 16px system-ui, sans-serif; max-width: 760px; margin: 4rem auto; padding: 0 1rem; background: #fafbfe; color: #202b3c; }
+    h1 { color: #143e70; } .card { border: 1px solid #dce3ef; background: white; padding: 1.5rem; border-radius: 12px; margin: 1rem 0; }
+    pre { white-space: pre-wrap; } .ok { color: #18794e; }
+  </style>
+</head>
+<body>
+  <h1>Multi-service CI/CD POC</h1>
+  <p>Frontend (NGINX) → Gateway → Backend services</p>
+  <div class="card"><h2>Administration</h2><pre id="administration">Loading...</pre></div>
+  <div class="card"><h2>AI Control</h2><pre id="ai">Loading...</pre></div>
+  <script>
+    for (const [id, path] of [['administration', '/api/admin/api/info'], ['ai', '/api/ai/api/info']]) {
+      fetch(path).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(body => { document.getElementById(id).textContent = JSON.stringify(body, null, 2); })
+        .catch(e => { document.getElementById(id).textContent = e.message; });
+    }
+  </script>
+</body>
+</html>

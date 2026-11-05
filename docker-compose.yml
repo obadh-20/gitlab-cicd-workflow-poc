@@ -1,0 +1,65 @@
+name: cicd-workflow-poc
+
+services:
+  administration:
+    build:
+      context: ./backend
+      dockerfile: administration/Dockerfile
+    image: cicd-poc/administration:local
+    environment:
+      PORT: '8010'
+    ports:
+      - '8010:8010'
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8010/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+  ai-control:
+    build:
+      context: ./backend
+      dockerfile: ai-control-panel/docker/Dockerfile
+    image: cicd-poc/ai-control:local
+    environment:
+      PORT: '8017'
+    ports:
+      - '8017:8017'
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8017/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+  gateway:
+    build:
+      context: ./backend
+      dockerfile: gateway/Dockerfile
+    image: cicd-poc/gateway:local
+    environment:
+      PORT: '8000'
+      ADMINISTRATION_URL: http://administration:8010
+      AI_CONTROL_PANEL_URL: http://ai-control:8017
+    ports:
+      - '8000:8000'
+    depends_on:
+      administration:
+        condition: service_healthy
+      ai-control:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: docker/Dockerfile
+    image: cicd-poc/frontend:local
+    ports:
+      - '8080:80'
+    depends_on:
+      gateway:
+        condition: service_healthy
