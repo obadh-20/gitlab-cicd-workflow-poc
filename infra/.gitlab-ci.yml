@@ -1,0 +1,104 @@
+workflow:
+  rules:
+    # Only validate all services for changes to the default branch.
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    # Only DEV release tags are allowed to publish images in Phase 1.
+    - if: '$CI_COMMIT_TAG =~ /^(dev-(gateway|administration|frontend)|ai-control)\/[0-9]+\.[0-9]+\.[0-9]+$/'
+    - when: never
+
+stages:
+  - test
+  - publish
+
+variables:
+  GHCR_NAMESPACE: "obadh-20"
+
+# Run on every new main-branch commit; never publish an image on plain pushes.
+main_checks:
+  stage: test
+  image: node:22-alpine
+  script:
+    - |
+      set -eu
+      for service in gateway administration ai-control-panel; do
+        echo "Testing $service"
+        (
+          cd "backend/$service"
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm test
+        )
+      done
+      test -s frontend/index.html
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# Tag pipeline: parse and test ONLY the service being released.
+release_tests:
+  stage: test
+  image: node:22-alpine
+  script:
+    - |
+      set -eu
+      sh scripts/parse-release-tag.sh "$CI_COMMIT_TAG" > release.env
+      . ./release.env
+      echo "Release: $SERVICE $VERSION ($ENVIRONMENT)"
+      case "$SERVICE" in
+        gateway|administration)
+          cd "backend/$SERVICE"
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm test
+          ;;
+        ai-control)
+          cd backend/ai-control-panel
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm test
+          ;;
+        frontend)
+          test -s frontend/index.html
+          ;;
+        *)
+          echo "Unknown service" >&2
+          exit 2
+          ;;
+      esac
+  artifacts:
+    reports:
+      dotenv: release.env
+    expire_in: 1 day
+  rules:
+    - if: '$CI_COMMIT_TAG'
+
+# Uses GitLab.com hosted Docker-in-Docker runners. Builds only after tests pass.
+publish_to_ghcr:
+  stage: publish
+  image: docker:27.5.1-cli
+  services:
+    - name: docker:27.5.1-dind
+      alias: docker
+      variables:
+        HEALTHCHECK_TCP_PORT: "2376"
+  variables:
+    DOCKER_HOST: "tcp://docker:2376"
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: "/certs/client"
+  needs:
+    - job: release_tests
+      artifacts: true
+  script:
+    - |
+      set -eu
+      # release.env is a validated dotenv artifact from release_tests.
+      . ./release.env
+      test "$ENVIRONMENT" = dev
+      test -n "${GHCR_USERNAME:-}" || { echo "GHCR_USERNAME is missing" >&2; exit 1; }
+      test -n "${GHCR_TOKEN:-}" || { echo "GHCR_TOKEN is missing" >&2; exit 1; }
+      docker info >/dev/null
+      IMAGE="ghcr.io/${GHCR_NAMESPACE}/gitlab-cicd-poc-${SERVICE}:dev-${VERSION}-${CI_COMMIT_SHORT_SHA}"
+      printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+      echo "Building: $IMAGE"
+      docker build --pull -f "${BUILD_CONTEXT}/${DOCKERFILE}" -t "$IMAGE" "$BUILD_CONTEXT"
+      docker push "$IMAGE"
+      echo "Published: $IMAGE"
+  rules:
+    - if: '$CI_COMMIT_TAG'
