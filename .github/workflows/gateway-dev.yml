@@ -1,5 +1,5 @@
 
-name: Gateway - DEV CI
+name: Gateway - DEV CI/CD
 
 on:
   push:
@@ -10,15 +10,21 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: gateway-dev-release
+  cancel-in-progress: false
+
 jobs:
-  build-and-push:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      # 1. Checkout application repository
+      - name: Checkout application
         uses: actions/checkout@v4
 
-      - name: Validate release version
+      # 2. Validate release version
+      - name: Validate release
         id: release
         shell: bash
         run: |
@@ -31,20 +37,24 @@ jobs:
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Node.js
+      # 3. Setup Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
 
+      # 4. Run tests
       - name: Test Gateway
         working-directory: backend/gateway
         run: |
           npm ci
           npm test
 
-      - name: Set up Docker Buildx
+      # 5. Setup Docker Buildx
+      - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # 6. Login to GHCR
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -52,7 +62,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Gateway
+      # 7. Build and push Docker image
+      - name: Build and Push Gateway
         uses: docker/build-push-action@v6
         with:
           context: ./backend
@@ -60,5 +71,75 @@ jobs:
           push: true
           tags: |
             ghcr.io/obadh-20/gitops-poc-gateway:dev-${{ steps.release.outputs.version }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/obadh-20/gitlab-cicd-workflow-poc
+
+      # 8. Checkout infrastructure repository
+      - name: Checkout Infrastructure
+        uses: actions/checkout@v4
+        with:
+          repository: obadh-20/gitops-infrastructure-poc
+          ref: main
+          token: ${{ secrets.INFRA_REPO_TOKEN }}
+          path: infrastructure
+
+      # 9. Update image tag in Kubernetes manifest
+      - name: Update Gateway Image
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          manifest = Path(
+              "infrastructure/manifests/dev/gateway/deployment.yaml"
+          )
+
+          content = manifest.read_text()
+          new_image = (
+              "ghcr.io/obadh-20/gitops-poc-gateway:"
+              f"dev-{os.environ['VERSION']}"
+          )
+
+          pattern = (
+              r"(?m)^(\s*image:\s*)"
+              r"ghcr\.io/obadh-20/gitops-poc-gateway:[^\s#]+"
+          )
+
+          updated, count = re.subn(
+              pattern,
+              lambda match: match.group(1) + new_image,
+              content
+          )
+
+          if count != 1:
+              raise SystemExit(
+                  f"Expected one Gateway image, found {count}"
+              )
+
+          manifest.write_text(updated)
+          print(f"Updated Gateway image to {new_image}")
+          PY
+
+      # 10. Commit and push updated manifest
+      - name: Push Infrastructure Update
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          cd infrastructure
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add manifests/dev/gateway/deployment.yaml
+
+          if git diff --cached --quiet; then
+            echo "Image version is already up to date."
+            exit 0
+          fi
+
+          git commit -m "chore(gateway): deploy dev-${VERSION}"
+          git push origin HEAD:main
